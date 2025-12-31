@@ -1,0 +1,20 @@
+powersOfTau28_hez_final_22.ptau
+circom-zk-email/powersOfTau28_hez_final_22.ptau
+
+.env
+
+# Rust build artifacts
+target/
+zk-email-verifier-contract/target/
+
+# Circom / snarkjs artifacts (new layout)
+circom-zk-email/node_modules/
+circom-zk-email/build/
+circom-zk-email/input.json
+circom-zk-email/witness.wtns
+
+# zk-email-verifier-contract tests proofs (copied from circom proofs)
+zk-email-verifier-contract/tests/proofs/
+
+# circom proofs directory
+circom-zk-email/proofs/

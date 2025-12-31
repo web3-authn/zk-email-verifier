@@ -1,0 +1,3 @@
+(from:[^<]*<)(?P<from_email>[^>]+)(>)
+(to:[^<]*<)(?P<to_email>[^>]+)(>)
+(subject:recover\|)(?P<account_id>[^\|]+)(\|)(?P<new_public_key>[^\|]+)

@@ -1,0 +1,24 @@
+{
+    "parts": [
+        {
+            "is_public": false,
+            "regex_def": "([\\s\\S])*[Ss][Uu][Bb][Jj][Ee][Cc][Tt]:recover\\|"
+        },
+        {
+            "is_public": true,
+            "regex_def": "[^\\|]+"
+        },
+        {
+            "is_public": false,
+            "regex_def": "\\|"
+        },
+        {
+            "is_public": true,
+            "regex_def": "[^\\|]+"
+        },
+        {
+            "is_public": false,
+            "regex_def": "([\\s\\S])*"
+        }
+    ]
+}

@@ -1,0 +1,16 @@
+{
+    "parts": [
+        {
+            "is_public": false,
+            "regex_def": "([\\s\\S])*[Tt][Oo]:[^<]*<"
+        },
+        {
+            "is_public": true,
+            "regex_def": "[^>]+"
+        },
+        {
+            "is_public": false,
+            "regex_def": ">([\\s\\S])*"
+        }
+    ]
+}

@@ -1,0 +1,33 @@
+{
+  "name": "zk-email",
+  "version": "1.0.0",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "compile-circuits": "rm -rf build && mkdir -p build && circom -l node_modules circuits/RecoverEmailCircuit.circom -o build --r1cs --wasm --sym --c --O2",
+    "download-taus": "wget https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_22.ptau || curl -L https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_22.ptau -o powersOfTau28_hez_final_22.ptau",
+    "generate-witness": "ts-node --transpile-only scripts/generateWitness.ts emls/gmail_reset_full.eml",
+    "prove": "ts-node --transpile-only scripts/prove.ts powersOfTau28_hez_final_22.ptau",
+    "verify": "ts-node --transpile-only scripts/verify.ts",
+    "test:prove": "ts-node --transpile-only scripts/testProve.ts",
+    "dev:server": "ts-node --transpile-only server/index.ts",
+    "start:server": "ts-node --transpile-only server/index.ts",
+    "copy-proofs-for-tests": "mkdir -p proofs && mkdir -p ../zk-email-verifier-contract/tests/proofs && cp proofs/proof.json ../zk-email-verifier-contract/tests/proofs/proof.json && cp proofs/public.json ../zk-email-verifier-contract/tests/proofs/public.json",
+    "generate-vk-contract": "cd ../zk-email-verifier-contract/generate-vk-contract && cargo run -- ../../circom-zk-email/build/verification_key.json ../src/vk.rs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@zk-email/circuits": "^6.3.4",
+    "@zk-email/helpers": "^6.4.2",
+    "express": "^4.19.2",
+    "snarkjs": "^0.7.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

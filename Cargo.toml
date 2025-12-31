@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "zk-email-verifier-contract/generate-vk-contract",
+    "zk-email-verifier-contract",
+]
+resolver = "2"
