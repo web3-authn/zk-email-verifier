@@ -32,6 +32,20 @@ cargo-test:
     cd circom-zk-email && pnpm generate-vk-contract && pnpm copy-proofs-for-tests
     cd zk-email-verifier-contract && cargo test -- --nocapture
 
+### Contract Deployment
+
+deploy-dev:
+    cd zk-email-verifier-contract && ./scripts/deploy-dev.sh
+
+deploy:
+    cd zk-email-verifier-contract && ./scripts/deploy.sh
+
+upgrade-dev:
+    cd zk-email-verifier-contract && ./scripts/upgrade-dev.sh
+
+upgrade:
+    cd zk-email-verifier-contract && ./scripts/upgrade.sh
+
 
 ### E2E Testing
 
