@@ -2,7 +2,15 @@ use std::{fs, path::Path};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use zk_email_verifier_contract::{ProofInput, VerificationResult};
+
+fn expected_from_address_hash(from_email: &str, account_id: &str) -> Vec<u8> {
+    let canonical_from = from_email.trim().to_ascii_lowercase();
+    let account_id_lower = account_id.trim().to_ascii_lowercase();
+    let preimage = format!("{canonical_from}|{account_id_lower}");
+    Sha256::digest(preimage.as_bytes()).to_vec()
+}
 
 /// Response from the Docker prover's /prove-email endpoint
 #[derive(Deserialize)]
@@ -100,7 +108,7 @@ async fn e2e_generate_and_verify_proof() -> Result<(), Box<dyn std::error::Error
     println!("Verified: {}", result.verified);
     println!("Account ID: {}", result.account_id);
     println!("New Public Key: {}", result.new_public_key);
-    println!("From Address: {}", result.from_address);
+    println!("From Address Hash (len={}): {:?}", result.from_address_hash.len(), result.from_address_hash);
     if let Some(ts) = result.email_timestamp_ms {
         println!("Email Timestamp: {} ms", ts);
     }
@@ -109,6 +117,9 @@ async fn e2e_generate_and_verify_proof() -> Result<(), Box<dyn std::error::Error
         result.verified,
         "on-chain verify returned false for generated proof"
     );
+
+    let expected_hash = expected_from_address_hash("n6378056@gmail.com", &result.account_id);
+    assert_eq!(result.from_address_hash, expected_hash);
 
     Ok(())
 }

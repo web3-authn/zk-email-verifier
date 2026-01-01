@@ -170,12 +170,15 @@ template MyCircuit(max_header_bytes, max_body_bytes, n, k, pack_size) {
     fromPrefix.out[3] === 109; // m
     fromPrefix.out[4] === 58;  // :
 
-    // Pack From email address from header
+    // Sender binding:
+    // Compute a public hash of the canonical From email, salted by account id:
+    // sha256("<canonical_from>|<account_id_lower>").
+    //
+    // `from_email` itself stays private; only the hash bytes are exposed.
     var max_from_len = 255;
-    component fromEmailPacker = PackByteSubArray(max_header_bytes, max_from_len);
-    fromEmailPacker.in <== emailHeader;
-    fromEmailPacker.startIndex <== from_addr_idx;
-    fromEmailPacker.length <== from_addr_len;
+    var max_account_len = 255;
+    var max_preimage_len = 512;         // max_from_len + 1 + max_account_len = 511
+    var max_preimage_padded_len = 576;  // SHA-256 padded length for <= 511 bytes is <= 576
 
     // Range check for From: ensure no CR or LF between "from:" and the email address.
     var from_gap_max_len = 255;
@@ -194,6 +197,268 @@ template MyCircuit(max_header_bytes, max_body_bytes, n, k, pack_size) {
         fromNoNewline[i].in <== (fromGap.out[i] - 13) * (fromGap.out[i] - 10);
         fromNoNewline[i].out === 0;
     }
+
+    // Range checks for lengths used in hashing.
+    component fromAddrLenBits = Num2Bits(8);
+    fromAddrLenBits.in <== from_addr_len;
+
+    component accountIdLenBits = Num2Bits(8);
+    accountIdLenBits.in <== subject_account_id_len;
+
+    // Extract From email bytes (private) and lowercase ASCII A-Z.
+    component fromEmailBytes = SelectSubArray(max_header_bytes, max_from_len);
+    fromEmailBytes.in <== emailHeader;
+    fromEmailBytes.startIndex <== from_addr_idx;
+    fromEmailBytes.length <== from_addr_len;
+
+    signal from_email_lower[max_from_len];
+    component fromByteBits[max_from_len];
+    component fromLt65[max_from_len];
+    component fromLt91[max_from_len];
+    signal fromIsGe65[max_from_len];
+    signal fromIsUpper[max_from_len];
+    for (var i = 0; i < max_from_len; i++) {
+        // Constrain as byte and canonicalize ASCII letters.
+        fromByteBits[i] = Num2Bits(8);
+        fromByteBits[i].in <== fromEmailBytes.out[i];
+
+        fromLt65[i] = LessThan(8);
+        fromLt65[i].in[0] <== fromEmailBytes.out[i];
+        fromLt65[i].in[1] <== 65; // 'A'
+
+        fromLt91[i] = LessThan(8);
+        fromLt91[i].in[0] <== fromEmailBytes.out[i];
+        fromLt91[i].in[1] <== 91; // 'Z' + 1
+
+        fromIsGe65[i] <== 1 - fromLt65[i].out;
+        fromIsUpper[i] <== fromIsGe65[i] * fromLt91[i].out;
+
+        from_email_lower[i] <== fromEmailBytes.out[i] + 32 * fromIsUpper[i];
+    }
+
+    // Extract Subject account_id bytes (private) and lowercase ASCII A-Z.
+    component accountIdBytes = SelectSubArray(max_header_bytes, max_account_len);
+    accountIdBytes.in <== emailHeader;
+    accountIdBytes.startIndex <== subject_account_id_idx;
+    accountIdBytes.length <== subject_account_id_len;
+
+    signal account_id_lower[max_account_len];
+    component accountByteBits[max_account_len];
+    component accountLt65[max_account_len];
+    component accountLt91[max_account_len];
+    signal accountIsGe65[max_account_len];
+    signal accountIsUpper[max_account_len];
+    for (var i = 0; i < max_account_len; i++) {
+        accountByteBits[i] = Num2Bits(8);
+        accountByteBits[i].in <== accountIdBytes.out[i];
+
+        accountLt65[i] = LessThan(8);
+        accountLt65[i].in[0] <== accountIdBytes.out[i];
+        accountLt65[i].in[1] <== 65; // 'A'
+
+        accountLt91[i] = LessThan(8);
+        accountLt91[i].in[0] <== accountIdBytes.out[i];
+        accountLt91[i].in[1] <== 91; // 'Z' + 1
+
+        accountIsGe65[i] <== 1 - accountLt65[i].out;
+        accountIsUpper[i] <== accountIsGe65[i] * accountLt91[i].out;
+
+        account_id_lower[i] <== accountIdBytes.out[i] + 32 * accountIsUpper[i];
+    }
+
+    // Build preimage bytes: <from_email_lower>|<account_id_lower>
+    // using rotation-with-zero-fill shifts (VarShiftLeft) so we can concatenate with a dynamic boundary.
+    signal fromVec[max_preimage_len];
+    signal accountVecBase[max_preimage_len];
+    signal delimBase[max_preimage_len];
+
+    for (var i = 0; i < max_preimage_len; i++) {
+        if (i < max_from_len) {
+            fromVec[i] <== from_email_lower[i];
+        } else {
+            fromVec[i] <== 0;
+        }
+
+        if (i < max_account_len) {
+            accountVecBase[i] <== account_id_lower[i];
+        } else {
+            accountVecBase[i] <== 0;
+        }
+
+        if (i == 0) {
+            delimBase[i] <== 124; // '|'
+        } else {
+            delimBase[i] <== 0;
+        }
+    }
+
+    // Shift account bytes right by (from_addr_len + 1) positions (rotation with zero-filled tail).
+    signal accountShiftLeft;
+    accountShiftLeft <== max_preimage_len - from_addr_len - 1;
+    component accountShifter = VarShiftLeft(max_preimage_len, max_preimage_len);
+    accountShifter.in <== accountVecBase;
+    accountShifter.shift <== accountShiftLeft;
+
+    // Shift delimiter right by from_addr_len positions; if from_addr_len == 0, keep at index 0.
+    component fromLenIsZero = IsZero();
+    fromLenIsZero.in <== from_addr_len;
+
+    signal delimShiftLeft;
+    delimShiftLeft <== (max_preimage_len - from_addr_len) * (1 - fromLenIsZero.out);
+    component delimShifter = VarShiftLeft(max_preimage_len, max_preimage_len);
+    delimShifter.in <== delimBase;
+    delimShifter.shift <== delimShiftLeft;
+
+    // Combine into full preimage (no overlaps by construction).
+    signal preimage[max_preimage_len];
+    for (var i = 0; i < max_preimage_len; i++) {
+        preimage[i] <== fromVec[i] + delimShifter.out[i] + accountShifter.out[i];
+    }
+
+    // Message length (bytes) for standard SHA-256 padding.
+    signal preimage_len;
+    preimage_len <== from_addr_len + 1 + subject_account_id_len;
+
+    // Constrain preimage_len to 0..511 (9 bits).
+    component preimageLenBits = Num2Bits(9);
+    preimageLenBits.in <== preimage_len;
+
+    // Compute padded length in bytes: 64 * ceil((preimage_len + 9) / 64)
+    component le55 = LessEqThan(9);
+    le55.in[0] <== preimage_len;
+    le55.in[1] <== 55;
+    component le119 = LessEqThan(9);
+    le119.in[0] <== preimage_len;
+    le119.in[1] <== 119;
+    component le183 = LessEqThan(9);
+    le183.in[0] <== preimage_len;
+    le183.in[1] <== 183;
+    component le247 = LessEqThan(9);
+    le247.in[0] <== preimage_len;
+    le247.in[1] <== 247;
+    component le311 = LessEqThan(9);
+    le311.in[0] <== preimage_len;
+    le311.in[1] <== 311;
+    component le375 = LessEqThan(9);
+    le375.in[0] <== preimage_len;
+    le375.in[1] <== 375;
+    component le439 = LessEqThan(9);
+    le439.in[0] <== preimage_len;
+    le439.in[1] <== 439;
+    component le503 = LessEqThan(9);
+    le503.in[0] <== preimage_len;
+    le503.in[1] <== 503;
+
+    signal isBlock1;
+    signal isBlock2;
+    signal isBlock3;
+    signal isBlock4;
+    signal isBlock5;
+    signal isBlock6;
+    signal isBlock7;
+    signal isBlock8;
+    signal isBlock9;
+
+    isBlock1 <== le55.out;
+    isBlock2 <== le119.out - le55.out;
+    isBlock3 <== le183.out - le119.out;
+    isBlock4 <== le247.out - le183.out;
+    isBlock5 <== le311.out - le247.out;
+    isBlock6 <== le375.out - le311.out;
+    isBlock7 <== le439.out - le375.out;
+    isBlock8 <== le503.out - le439.out;
+    isBlock9 <== 1 - le503.out;
+
+    isBlock1 + isBlock2 + isBlock3 + isBlock4 + isBlock5 + isBlock6 + isBlock7 + isBlock8 + isBlock9 === 1;
+
+    signal numBlocks;
+    numBlocks <== 1 * isBlock1
+              + 2 * isBlock2
+              + 3 * isBlock3
+              + 4 * isBlock4
+              + 5 * isBlock5
+              + 6 * isBlock6
+              + 7 * isBlock7
+              + 8 * isBlock8
+              + 9 * isBlock9;
+
+    signal preimage_padded_len;
+    preimage_padded_len <== numBlocks * 64;
+
+    // Build SHA-256 padded message bytes (length <= 576).
+    signal preimage_ext[max_preimage_padded_len];
+    for (var i = 0; i < max_preimage_padded_len; i++) {
+        if (i < max_preimage_len) {
+            preimage_ext[i] <== preimage[i];
+        } else {
+            preimage_ext[i] <== 0;
+        }
+    }
+
+    // Insert 0x80 at index preimage_len via rotation.
+    signal oneBase[max_preimage_padded_len];
+    for (var i = 0; i < max_preimage_padded_len; i++) {
+        if (i == 0) {
+            oneBase[i] <== 128;
+        } else {
+            oneBase[i] <== 0;
+        }
+    }
+
+    signal shiftOne;
+    shiftOne <== max_preimage_padded_len - preimage_len;
+    component oneShifter = VarShiftLeft(max_preimage_padded_len, max_preimage_padded_len);
+    oneShifter.in <== oneBase;
+    oneShifter.shift <== shiftOne;
+
+    // Length field (64-bit big-endian) for messages <= 511 bytes:
+    // only the last two bytes can be non-zero since len_bits <= 4088.
+    signal len_bits;
+    len_bits <== preimage_len * 8;
+
+    // Split len_bits into 2 bytes (hi/lo) via bit decomposition.
+    component lenBitsDecomp = Num2Bits(16);
+    lenBitsDecomp.in <== len_bits;
+
+    component lenLo = Bits2Num(8);
+    component lenHi = Bits2Num(8);
+    for (var i = 0; i < 8; i++) {
+        lenLo.in[i] <== lenBitsDecomp.out[i];
+        lenHi.in[i] <== lenBitsDecomp.out[8 + i];
+    }
+
+    signal lenBase[max_preimage_padded_len];
+    for (var i = 0; i < max_preimage_padded_len; i++) {
+        if (i == 6) {
+            lenBase[i] <== lenHi.out;
+        } else if (i == 7) {
+            lenBase[i] <== lenLo.out;
+        } else {
+            lenBase[i] <== 0;
+        }
+    }
+
+    signal shiftLen;
+    shiftLen <== (max_preimage_padded_len + 8) - preimage_padded_len; // 576 - (preimage_padded_len - 8)
+    component lenShifter = VarShiftLeft(max_preimage_padded_len, max_preimage_padded_len);
+    lenShifter.in <== lenBase;
+    lenShifter.shift <== shiftLen;
+
+    // Final padded preimage bytes.
+    signal from_address_hash_preimage_padded[max_preimage_padded_len];
+    for (var i = 0; i < max_preimage_padded_len; i++) {
+        from_address_hash_preimage_padded[i] <== preimage_ext[i] + oneShifter.out[i] + lenShifter.out[i];
+    }
+
+    // SHA-256("<from>|<account_id>") as bits (big-endian).
+    signal from_address_hash_bits[256] <== Sha256Bytes(max_preimage_padded_len)(
+        from_address_hash_preimage_padded,
+        preimage_padded_len
+    );
+
+    // Pack digest bits into 32 raw bytes (big-endian).
+    component fromAddressHashBytes = PackBits(256, 8);
+    fromAddressHashBytes.in <== from_address_hash_bits;
 
     // Anchor check for Date:
     // If date_start_idx != 0, enforce CRLF immediately before.
@@ -239,8 +504,8 @@ template MyCircuit(max_header_bytes, max_body_bytes, n, k, pack_size) {
     signal output public_key_packed[9];
     public_key_packed <== publicKeyPacker.out;
 
-    signal output from_email_packed[9];
-    from_email_packed <== fromEmailPacker.out;
+    signal output from_address_hash[32];
+    from_address_hash <== fromAddressHashBytes.out;
 
     signal output timestamp_packed[9];
     timestamp_packed <== datePacker.out;

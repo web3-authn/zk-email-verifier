@@ -27,7 +27,11 @@ pub struct VerificationResult {
     pub verified: bool,
     pub account_id: String,
     pub new_public_key: String,
-    pub from_address: String,
+    /// SHA-256 hash of the canonical sender email, salted by account id:
+    /// `sha256("<canonical_from>|<account_id_lower>")`.
+    /// Returned as raw bytes so the caller contract can compare directly
+    /// against `get_recovery_emails()` output (which is `Vec<Vec<u8>>`).
+    pub from_address_hash: Vec<u8>,
     pub email_timestamp_ms: Option<u64>,
 }
 
@@ -56,7 +60,7 @@ impl ZkEmailVerifier {
                     verified: false,
                     account_id: String::new(),
                     new_public_key: String::new(),
-                    from_address: String::new(),
+                    from_address_hash: Vec::new(),
                     email_timestamp_ms: None,
                 };
             }
@@ -69,7 +73,7 @@ impl ZkEmailVerifier {
                     verified: false,
                     account_id: String::new(),
                     new_public_key: String::new(),
-                    from_address: String::new(),
+                    from_address_hash: Vec::new(),
                     email_timestamp_ms: None,
                 };
             }
@@ -84,7 +88,7 @@ impl ZkEmailVerifier {
                 verified: false,
                 account_id: String::new(),
                 new_public_key: String::new(),
-                from_address: String::new(),
+                from_address_hash: Vec::new(),
                 email_timestamp_ms: None,
             };
         }
@@ -92,14 +96,15 @@ impl ZkEmailVerifier {
         // Attempt to decode the packed substrings from the public inputs.
         let mut account_id = String::new();
         let mut new_public_key = String::new();
-        let mut from_address = String::new();
+        let mut from_address_hash = Vec::new();
         let mut email_timestamp_ms = None;
 
         if inputs_ark.len() >= EXPECTED_PUBLIC_LEN {
             let account_chunks = &inputs_ark[ACCOUNT_OFFSET..ACCOUNT_OFFSET + PACKED_SUBSTRING_FIELD_LEN];
             let new_pk_chunks =
                 &inputs_ark[NEW_PK_OFFSET..NEW_PK_OFFSET + PACKED_SUBSTRING_FIELD_LEN];
-            let from_chunks = &inputs_ark[FROM_OFFSET..FROM_OFFSET + PACKED_SUBSTRING_FIELD_LEN];
+            let from_hash_fields =
+                &inputs_ark[FROM_ADDRESS_HASH_OFFSET..FROM_ADDRESS_HASH_OFFSET + FROM_ADDRESS_HASH_LEN];
             let ts_chunks =
                 &inputs_ark[TIMESTAMP_OFFSET..TIMESTAMP_OFFSET + PACKED_SUBSTRING_FIELD_LEN];
 
@@ -109,8 +114,8 @@ impl ZkEmailVerifier {
             if let Ok(s) = unpack_field_chunks_to_str(new_pk_chunks) {
                 new_public_key = s;
             }
-            if let Ok(s) = unpack_field_chunks_to_str(from_chunks) {
-                from_address = s;
+            if let Ok(h) = unpack_field_elems_to_bytes(from_hash_fields) {
+                from_address_hash = h;
             }
             if let Ok(ts_str) = unpack_field_chunks_to_str(ts_chunks) {
                 email_timestamp_ms = parse_email_timestamp_to_unix_ms(&ts_str);
@@ -121,7 +126,7 @@ impl ZkEmailVerifier {
             verified: true,
             account_id,
             new_public_key,
-            from_address,
+            from_address_hash,
             email_timestamp_ms,
         }
     }
@@ -129,7 +134,6 @@ impl ZkEmailVerifier {
     /// Verify a Groth16 proof and additionally bind the public signals corresponding to:
     /// - account_id
     /// - new_public_key
-    /// - from_email
     /// - timestamp (Date: header substring)
     ///
     /// The circuit packs these three substrings from the DKIM‑verified header using
@@ -141,14 +145,13 @@ impl ZkEmailVerifier {
         public_inputs: Vec<String>,
         account_id: String,
         new_public_key: String,
-        from_email: String,
         timestamp: String,
     ) -> VerificationResult {
         let mut result = VerificationResult {
             verified: false,
             account_id: account_id.clone(),
             new_public_key: new_public_key.clone(),
-            from_address: from_email.clone(),
+            from_address_hash: Vec::new(),
             email_timestamp_ms: parse_email_timestamp_to_unix_ms(&timestamp),
         };
 
@@ -169,15 +172,18 @@ impl ZkEmailVerifier {
             return result;
         }
 
+        // Capture from_address_hash bytes from the public inputs (if present and well-formed).
+        let from_hash_fields =
+            &inputs_ark[FROM_ADDRESS_HASH_OFFSET..FROM_ADDRESS_HASH_OFFSET + FROM_ADDRESS_HASH_LEN];
+        if let Ok(h) = unpack_field_elems_to_bytes(from_hash_fields) {
+            result.from_address_hash = h;
+        }
+
         let account_chunks = match pack_str_to_field_chunks(&account_id) {
             Ok(c) => c,
             Err(_) => return result,
         };
         let new_pk_chunks = match pack_str_to_field_chunks(&new_public_key) {
-            Ok(c) => c,
-            Err(_) => return result,
-        };
-        let from_chunks = match pack_str_to_field_chunks(&from_email) {
             Ok(c) => c,
             Err(_) => return result,
         };
@@ -189,7 +195,6 @@ impl ZkEmailVerifier {
         // Sanity: all packed substrings must have the expected length.
         if account_chunks.len() != PACKED_SUBSTRING_FIELD_LEN
             || new_pk_chunks.len() != PACKED_SUBSTRING_FIELD_LEN
-            || from_chunks.len() != PACKED_SUBSTRING_FIELD_LEN
             || timestamp_chunks.len() != PACKED_SUBSTRING_FIELD_LEN
         {
             return result;
@@ -205,13 +210,6 @@ impl ZkEmailVerifier {
         // Check new_public_key binding.
         for i in 0..PACKED_SUBSTRING_FIELD_LEN {
             if inputs_ark[NEW_PK_OFFSET + i] != new_pk_chunks[i] {
-                return result;
-            }
-        }
-
-        // Check from_email binding.
-        for i in 0..PACKED_SUBSTRING_FIELD_LEN {
-            if inputs_ark[FROM_OFFSET + i] != from_chunks[i] {
                 return result;
             }
         }
@@ -292,19 +290,36 @@ const PACKED_BYTES_PER_FIELD: usize = 31;
 /// Must match the `max_*_len` constants used in `RecoverEmailCircuit.circom` (255).
 const MAX_PACKED_SUBSTRING_LEN: usize = 255;
 
-/// Number of field elements used per packed substring (account_id, new_public_key, from_email, timestamp).
+/// Number of field elements used per packed substring (account_id, new_public_key, timestamp).
 /// 255 bytes / 31 bytes per field = 9.
 const PACKED_SUBSTRING_FIELD_LEN: usize = 9;
 
+/// Number of field elements used for `from_address_hash` (32 SHA-256 bytes).
+const FROM_ADDRESS_HASH_LEN: usize = 32;
+
 /// Layout constants for `RecoverEmailCircuit` public inputs:
-/// [request_id_packed[9], account_id_packed[9], public_key_packed[9], from_email_packed[9], timestamp_packed[9], pubkey[17], signature[17]]
+/// [request_id_packed[9], account_id_packed[9], public_key_packed[9], from_address_hash[32], timestamp_packed[9], pubkey[17], signature[17]]
 const PUBKEY_LEN: usize = 17;
 const REQUEST_ID_OFFSET: usize = 0;
 const ACCOUNT_OFFSET: usize = REQUEST_ID_OFFSET + PACKED_SUBSTRING_FIELD_LEN;
 const NEW_PK_OFFSET: usize = ACCOUNT_OFFSET + PACKED_SUBSTRING_FIELD_LEN;
-const FROM_OFFSET: usize = NEW_PK_OFFSET + PACKED_SUBSTRING_FIELD_LEN;
-const TIMESTAMP_OFFSET: usize = FROM_OFFSET + PACKED_SUBSTRING_FIELD_LEN;
-const EXPECTED_PUBLIC_LEN: usize = PACKED_SUBSTRING_FIELD_LEN * 5 + PUBKEY_LEN * 2;
+const FROM_ADDRESS_HASH_OFFSET: usize = NEW_PK_OFFSET + PACKED_SUBSTRING_FIELD_LEN;
+const TIMESTAMP_OFFSET: usize = FROM_ADDRESS_HASH_OFFSET + FROM_ADDRESS_HASH_LEN;
+const EXPECTED_PUBLIC_LEN: usize =
+    PACKED_SUBSTRING_FIELD_LEN * 4 + FROM_ADDRESS_HASH_LEN + PUBKEY_LEN * 2;
+
+fn unpack_field_elems_to_bytes(fields: &[Fr]) -> Result<Vec<u8>, ()> {
+    let mut out = Vec::with_capacity(fields.len());
+    for fr in fields {
+        let bigint = fr.into_bigint();
+        let bytes = bigint.to_bytes_le();
+        if bytes.iter().skip(1).any(|b| *b != 0) {
+            return Err(());
+        }
+        out.push(*bytes.first().unwrap_or(&0u8));
+    }
+    Ok(out)
+}
 
 fn pack_str_to_field_chunks(s: &str) -> Result<Vec<Fr>, ()> {
     let bytes = s.as_bytes();

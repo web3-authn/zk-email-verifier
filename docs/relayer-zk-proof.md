@@ -132,13 +132,14 @@ For `RecoverEmailCircuit`, the `publicSignals` layout is:
 1. `request_id_packed[9]` (from `Subject: recover-<request_id> ...`)
 2. `account_id_packed[9]`
 3. `public_key_packed[9]` (the new Ed25519 public key)
-4. `from_email_packed[9]`
+4. `from_address_hash[32]` (SHA‑256 bytes of `"<canonical_from>|<account_id_lower>"`)
 5. `timestamp_packed[9]` (the `Date:` header substring)
 6. `pubkey[17]` (RSA public key for DKIM)
 7. `signature[17]` (RSA signature over the canonicalized header)
 
 Each `*_packed[9]` is the 255‑byte substring packed into 9 field elements
 using base‑256 (31 bytes per field).
+`from_address_hash[32]` is exposed as 32 byte‑sized field elements.
 
 Note: if you are verifying on‑chain, your verifier must use the same public
 signal ordering/length. In this repo, `zk-email-verifier-contract` may need to
@@ -178,8 +179,8 @@ proofs on‑chain, the typical flow is:
 3. Receive `{ proof, publicSignals }`.
 4. Extract the human‑readable fields by:
    - Either relying on the verifier contract’s `verify_with_binding` method
-     (passing the strings you expect: `account_id`, `new_public_key`,
-     `from_email`, `timestamp`), or
+     (passing the strings you expect: `account_id`, `new_public_key`, `timestamp`),
+     and then checking the returned `from_address_hash` against your allowlist, or
    - Unpacking `publicSignals` client‑side if you need to inspect them.
 5. Submit the proof and bound values to the on‑chain verifier (e.g. NEAR
    `ZkEmailVerifier::verify_with_binding`) or to a TEE verifier, depending

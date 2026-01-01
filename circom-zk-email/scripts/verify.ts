@@ -7,37 +7,10 @@
  *   pnpm verify
  */
 
-import fs from "fs";
 import path from "path";
-import { spawnSync, SpawnSyncOptions } from "child_process";
+import { ensureFileExists, runSnarkjs } from "./snarkjsUtils";
 
 const SCRIPT_START = Date.now();
-
-function ensureFileExists(p: string, message?: string): void {
-  if (!fs.existsSync(p)) {
-    throw new Error(message || `Required file not found: ${p}`);
-  }
-}
-
-function runSnarkjs(args: string[], opts: SpawnSyncOptions = {}): void {
-  const cliPath = path.join(
-    __dirname,
-    "..",
-    "node_modules",
-    "snarkjs",
-    "build",
-    "cli.cjs"
-  );
-
-  const res = spawnSync("node", [cliPath, ...args], {
-    stdio: "inherit",
-    ...opts,
-  });
-
-  if (res.status !== 0) {
-    throw new Error(`snarkjs ${args.join(" ")} failed with exit code ${res.status}`);
-  }
-}
 
 async function main(): Promise<void> {
   const repoRoot = path.join(__dirname, "..");

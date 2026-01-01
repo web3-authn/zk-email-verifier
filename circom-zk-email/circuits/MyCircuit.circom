@@ -217,9 +217,6 @@ template RecoverEmailCircuit(max_header_bytes, max_body_bytes, n, k, pack_size) 
     signal output public_key_packed[9];
     public_key_packed <== publicKeyPacker.out;
 
-    signal output from_email_packed[9];
-    from_email_packed <== fromEmailPacker.out;
-
     signal output timestamp_packed[9];
     timestamp_packed <== datePacker.out;
 }

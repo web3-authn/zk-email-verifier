@@ -10,29 +10,15 @@
 
 import fs from "fs";
 import path from "path";
-import { spawnSync, SpawnSyncOptions } from "child_process";
+import { spawnSync } from "child_process";
+import {
+  checkGroth16ZkeyLayout,
+  ensureFileExists,
+  getSnarkjsMaxOldSpaceSizeMb,
+  runSnarkjs,
+} from "./snarkjsUtils";
 
 const SCRIPT_START = Date.now();
-
-function runSnarkjs(args: string[], opts: SpawnSyncOptions = {}): void {
-  const cliPath = path.join(
-    __dirname,
-    "..",
-    "node_modules",
-    "snarkjs",
-    "build",
-    "cli.cjs"
-  );
-
-  const res = spawnSync("node", [cliPath, ...args], {
-    stdio: "inherit",
-    ...opts,
-  });
-
-  if (res.status !== 0) {
-    throw new Error(`snarkjs ${args.join(" ")} failed with exit code ${res.status}`);
-  }
-}
 
 function runRapidsnark(
   zkeyPath: string,
@@ -58,12 +44,6 @@ function runRapidsnark(
     throw new Error(
       `rapidsnark ${zkeyPath} ${witnessPath} ${proofPath} ${publicPath} failed with exit code ${res.status}${signalInfo}`
     );
-  }
-}
-
-function ensureFileExists(p: string, message?: string): void {
-  if (!fs.existsSync(p)) {
-    throw new Error(message || `Required file not found: ${p}`);
   }
 }
 
@@ -107,28 +87,35 @@ async function main(): Promise<void> {
   );
 
   // 1) Setup (if needed): generate zkey and verification key
+  if (fs.existsSync(zkeyPath)) {
+    const layout = checkGroth16ZkeyLayout(zkeyPath);
+    if (!layout.ok) {
+      console.warn(
+        `Existing zkey is invalid (${layout.reason}). Deleting and regenerating...`
+      );
+      fs.rmSync(zkeyPath, { force: true });
+      fs.rmSync(vkeyPath, { force: true });
+    }
+  }
+
   if (!fs.existsSync(zkeyPath)) {
-    console.log("No zkey found. Running groth16 setup...");
-    runSnarkjs([
-      "groth16",
-      "setup",
-      r1csPath,
-      ptauPath,
-      zkeyPath,
-    ]);
+    console.log(
+      `No valid zkey found. Running groth16 setup (snarkjs heap: ${getSnarkjsMaxOldSpaceSizeMb()} MB)...`
+    );
+    const tmpZkeyPath = `${zkeyPath}.tmp`;
+    fs.rmSync(tmpZkeyPath, { force: true });
+    runSnarkjs(["groth16", "setup", r1csPath, ptauPath, tmpZkeyPath]);
+    fs.renameSync(tmpZkeyPath, zkeyPath);
   } else {
     console.log(`Using existing zkey: ${zkeyPath}`);
   }
 
   if (!fs.existsSync(vkeyPath)) {
     console.log("Exporting verification key...");
-    runSnarkjs([
-      "zkey",
-      "export",
-      "verificationkey",
-      zkeyPath,
-      vkeyPath,
-    ]);
+    const tmpVkeyPath = `${vkeyPath}.tmp`;
+    fs.rmSync(tmpVkeyPath, { force: true });
+    runSnarkjs(["zkey", "export", "verificationkey", zkeyPath, tmpVkeyPath]);
+    fs.renameSync(tmpVkeyPath, vkeyPath);
   } else {
     console.log(`Using existing verification key: ${vkeyPath}`);
   }
@@ -137,7 +124,20 @@ async function main(): Promise<void> {
   console.log("Generating proof (proof.json, public.json)...");
   if (process.env.USE_RAPIDSNARK === "1") {
     console.log("Using rapidsnark prover (USE_RAPIDSNARK=1)...");
-    runRapidsnark(zkeyPath, witnessPath, proofPath, publicPath);
+    try {
+      runRapidsnark(zkeyPath, witnessPath, proofPath, publicPath);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`rapidsnark failed (${msg}). Falling back to snarkjs prover...`);
+      runSnarkjs([
+        "groth16",
+        "prove",
+        zkeyPath,
+        witnessPath,
+        proofPath,
+        publicPath,
+      ]);
+    }
   } else {
     runSnarkjs([
       "groth16",

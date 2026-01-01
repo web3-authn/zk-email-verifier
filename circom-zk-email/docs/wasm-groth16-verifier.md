@@ -44,7 +44,7 @@ Features:
     - Range check: no `\r`/`\n` between `"from:"` and the start of the email address:
       - Implemented as `(byte - 13) * (byte - 10) != 0` over the gap.
   - Outputs:
-    - `from_email_packed[9]`
+    - `from_address_hash[32]` (SHA‑256 bytes of `"<canonical_from>|<account_id_lower>"`)
 
 - **Date header**
   - Pattern: `date: <timestamp>`
@@ -124,14 +124,13 @@ pub struct ProofInput {
 - Base `verify` method:
 
 ```rust
-pub fn verify(&self, proof: ProofInput, public_inputs: Vec<String>) -> bool {
+pub fn verify(&self, proof: ProofInput, public_inputs: Vec<String>) -> VerificationResult {
     let vk = vk::verifying_key();
     let pvk = prepare_verifying_key(&vk);
 
-    let proof_ark = match parse_proof(proof) { Ok(p) => p, Err(_) => return false };
-    let inputs_ark = match parse_public_inputs(public_inputs) { Ok(v) => v, Err(_) => return false };
-
-    Groth16::<Bn254>::verify_proof(&pvk, &proof_ark, &inputs_ark).unwrap_or(false)
+    // ...parse proof/public inputs...
+    // ...verify Groth16 proof...
+    // ...decode account_id/new_public_key/timestamp and return from_address_hash bytes...
 }
 ```
 
@@ -139,19 +138,17 @@ pub fn verify(&self, proof: ProofInput, public_inputs: Vec<String>) -> bool {
   - Recomputes packed field elements from:
     - `account_id: String`
     - `new_public_key: String`
-    - `from_email: String`
     - `timestamp: String`
   - Uses the same 31‑bytes‑per‑field packing as `RecoverEmailCircuit` (`PackByteSubArray`).
   - Checks these against the corresponding slots in `public_inputs`:
     - `account_id_packed[9]`
     - `public_key_packed[9]`
-    - `from_email_packed[9]`
     - `timestamp_packed[9]`
-  - Returns `true` only if both:
+  - Sets `verified = true` only if both:
     - Groth16 verification passes, and
-    - All four packed substrings match.
+    - All packed substrings match.
 
-This gives an on-chain API that not only verifies the proof, but also cryptographically binds the human-readable `account_id`, `new_public_key`, `from_email`, and `timestamp` to the DKIM‑verified email.
+This gives an on-chain API that not only verifies the proof, but also cryptographically binds the human-readable `account_id`, `new_public_key`, `from_address_hash`, and `timestamp` to the DKIM‑verified email.
 
 5. **Tests**
 
@@ -169,5 +166,3 @@ This gives an on-chain API that not only verifies the proof, but also cryptograp
     - Calls `new` and then `verify` as a view method.
 
 Both confirm that the Arkworks verifier + generated `vk.rs` accept the same proofs as snarkjs.
-
-

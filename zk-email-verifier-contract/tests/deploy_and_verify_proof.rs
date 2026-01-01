@@ -1,7 +1,15 @@
 use std::{fs, path::Path};
 
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use zk_email_verifier_contract::{ProofInput, VerificationResult};
+
+fn expected_from_address_hash(from_email: &str, account_id: &str) -> Vec<u8> {
+    let canonical_from = from_email.trim().to_ascii_lowercase();
+    let account_id_lower = account_id.trim().to_ascii_lowercase();
+    let preimage = format!("{canonical_from}|{account_id_lower}");
+    Sha256::digest(preimage.as_bytes()).to_vec()
+}
 
 /// End-to-end style test that:
 /// 1. Spins up a local NEAR sandbox node (via near-workspaces),
@@ -115,7 +123,7 @@ async fn deploy_and_verify_with_binding_snarkjs_proof_on_sandbox(
     let account_id = "kerp30.w3a-v1.testnet".to_string();
     let new_public_key =
         "86mqiBdv45gM4c5uLmvT3TU4g7DAg6KLpuabBSFweigm".to_string();
-    let from_email = "n6378056@gmail.com".to_string();
+    let from_email = "n6378056@gmail.com";
     let timestamp = "Tue, 9 Dec 2025 17:13:23 +0900".to_string();
 
     let res = contract
@@ -125,7 +133,6 @@ async fn deploy_and_verify_with_binding_snarkjs_proof_on_sandbox(
             "public_inputs": public_inputs,
             "account_id": account_id,
             "new_public_key": new_public_key,
-            "from_email": from_email,
             "timestamp": timestamp,
         }))
         .view()
@@ -136,6 +143,9 @@ async fn deploy_and_verify_with_binding_snarkjs_proof_on_sandbox(
         result.verified,
         "on-chain verify_with_binding returned false for snarkjs proof"
     );
+
+    let expected_hash = expected_from_address_hash(from_email, &account_id);
+    assert_eq!(result.from_address_hash, expected_hash);
 
     Ok(())
 }
